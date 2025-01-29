@@ -1,8 +1,16 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import structlog
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
-from services.contract_analyzer import ContractAnalyzer
+from src.services.contract_analyzer import ContractAnalyzer
 from dotenv import load_dotenv
 import os
 
@@ -23,13 +31,43 @@ except Exception as e:
     print(f"Failed to initialize ContractAnalyzer: {str(e)}")
     raise
 
+# Configure structured logging
+logger = structlog.get_logger()
+
+# Configure rate limiting
+limiter = Limiter(key_func=get_remote_address)
+
+# Add security middlewares
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["your-domain.com"])
+
+# Add rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Add metrics
+Instrumentator().instrument(app).expose(app)
+
+# Add health check
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 class ContractRequest(BaseModel):
     contract_address: str
 
 
 @app.post("/api/analyze-contract")
+@limiter.limit("10/minute")  # Add rate limiting
 async def analyze_contract(request: ContractRequest):
+    logger.info("contract_analysis_started", contract=request.contract_address)
     try:
         print(f"Received request to analyze contract: {
               request.contract_address}")
@@ -38,8 +76,11 @@ async def analyze_contract(request: ContractRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Error during contract analysis: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("contract_analysis_failed", 
+                    contract=request.contract_address,
+                    error=str(e))
+        raise HTTPException(status_code=500, 
+                          detail="Internal server error")
 
 
 @app.get("/api/contract-history/{contract_address}")

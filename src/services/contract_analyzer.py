@@ -4,6 +4,9 @@ import asyncio
 from dataclasses import dataclass
 from enum import Enum
 import os
+from cachetools import TTLCache
+import structlog
+from prometheus_client import Counter, Histogram
 
 
 class VulnerabilityType(str, Enum):
@@ -38,8 +41,21 @@ class Vulnerability:
     evidence: str = None
 
 
+logger = structlog.get_logger()
+
+# Add metrics
+ANALYSIS_COUNTER = Counter(
+    'contract_analysis_total', 
+    'Total number of contract analyses'
+)
+ANALYSIS_DURATION = Histogram(
+    'contract_analysis_duration_seconds',
+    'Time spent analyzing contracts'
+)
+
 class ContractAnalyzer:
     def __init__(self, provider_url: str):
+        self._cache = TTLCache(maxsize=100, ttl=3600)  # 1 hour cache
         print(f"Initializing ContractAnalyzer with URL: {provider_url}")
         if not provider_url:
             raise ValueError("Provider URL is required")
@@ -72,91 +88,22 @@ class ContractAnalyzer:
                                           max_retries} attempts")
 
     async def analyze_contract(self, contract_address: str) -> Dict:
-        """Analyze a smart contract for vulnerabilities"""
-        try:
-            print(f"Analyzing contract: {contract_address}")
-
-            # Convert to checksum address
-            checksum_address = Web3.to_checksum_address(contract_address)
-
-            # Validate address format
-            if not Web3.is_address(contract_address):
-                raise ValueError("Invalid Ethereum address format")
-
-            # Get contract code with retry mechanism
-            max_retries = 3
-            last_error = None
-
-            for attempt in range(max_retries):
-                try:
-                    code = self.w3.eth.get_code(
-                        checksum_address)  # Use checksum address
-                    if len(code) == 0:
-                        raise ValueError(f"No contract found at address {
-                                         checksum_address}")
-                    print(f"Contract code size: {len(code)} bytes")
-                    break
-                except Exception as e:
-                    print(
-                        f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-                    last_error = e
-                    if attempt == max_retries - 1:
-                        raise last_error
-
-            vulnerabilities = []
-            bytecode = code.hex()
-
-            # Run security checks with better error handling
+        # Add caching
+        cache_key = f"analysis_{contract_address}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+            
+        with ANALYSIS_DURATION.time():
+            ANALYSIS_COUNTER.inc()
             try:
-                vulnerabilities.extend(await self._check_backdoor_functions(bytecode))
+                result = await self._perform_analysis(contract_address)
+                self._cache[cache_key] = result
+                return result
             except Exception as e:
-                print(f"Error in backdoor check: {str(e)}")
-
-            try:
-                vulnerabilities.extend(await self._check_withdrawal_restrictions(bytecode))
-            except Exception as e:
-                print(f"Error in withdrawal check: {str(e)}")
-
-            try:
-                # Use checksum address
-                vulnerabilities.extend(await self._check_permissions(checksum_address))
-            except Exception as e:
-                print(f"Error in permissions check: {str(e)}")
-
-            try:
-                # Add transaction analysis
-                # Use checksum address
-                tx_vulnerabilities = await self._analyze_transaction_patterns(checksum_address)
-                vulnerabilities.extend(tx_vulnerabilities)
-
-                # Add liquidity analysis for DeFi contracts
-                # Use checksum address
-                liquidity_vulnerabilities = await self._analyze_liquidity_risk(checksum_address)
-                vulnerabilities.extend(liquidity_vulnerabilities)
-            except Exception as e:
-                print(f"Error in transaction analysis: {str(e)}")
-
-            try:
-                vulnerabilities.extend(await self._check_reentrancy(bytecode))
-            except Exception as e:
-                print(f"Error in reentrancy check: {str(e)}")
-
-            risk_score = self._calculate_risk_score(vulnerabilities)
-
-            return {
-                "contract_address": checksum_address,  # Return checksum address
-                "code_size": len(code),
-                "vulnerabilities": [vars(v) for v in vulnerabilities],
-                "risk_score": risk_score,
-                "timestamp": self.w3.eth.get_block('latest').timestamp,
-                # Use checksum address
-                "transaction_summary": await self._get_transaction_summary(checksum_address),
-                # Use checksum address
-                "holder_stats": await self._get_holder_statistics(checksum_address)
-            }
-        except Exception as e:
-            print(f"Error analyzing contract {contract_address}: {str(e)}")
-            raise
+                logger.error("analysis_failed",
+                           contract=contract_address,
+                           error=str(e))
+                raise
 
     async def _check_backdoor_functions(self, bytecode: str) -> List[Vulnerability]:
         """Check for potential backdoor functions"""
