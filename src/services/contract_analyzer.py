@@ -45,13 +45,14 @@ logger = structlog.get_logger()
 
 # Add metrics
 ANALYSIS_COUNTER = Counter(
-    'contract_analysis_total', 
+    'contract_analysis_total',
     'Total number of contract analyses'
 )
 ANALYSIS_DURATION = Histogram(
     'contract_analysis_duration_seconds',
     'Time spent analyzing contracts'
 )
+
 
 class ContractAnalyzer:
     def __init__(self, provider_url: str):
@@ -78,19 +79,21 @@ class ContractAnalyzer:
                 if self.w3.is_connected():
                     # Test with a simple call
                     block_number = self.w3.eth.block_number
-                    print(f"Connected successfully. Latest block: {block_number}")
+                    print(f"Connected successfully. Latest block: {
+                          block_number}")
                     return
             except Exception as e:
                 print(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
                 if attempt == max_retries - 1:
-                    raise ConnectionError(f"Failed to connect after {max_retries} attempts")
+                    raise ConnectionError(f"Failed to connect after {
+                                          max_retries} attempts")
 
     async def analyze_contract(self, contract_address: str) -> Dict:
         # Add caching
         cache_key = f"analysis_{contract_address}"
         if cache_key in self._cache:
             return self._cache[cache_key]
-            
+
         with ANALYSIS_DURATION.time():
             ANALYSIS_COUNTER.inc()
             try:
@@ -99,8 +102,8 @@ class ContractAnalyzer:
                 return result
             except Exception as e:
                 logger.error("analysis_failed",
-                           contract=contract_address,
-                           error=str(e))
+                             contract=contract_address,
+                             error=str(e))
                 raise
 
     async def _check_backdoor_functions(self, bytecode: str) -> List[Vulnerability]:
@@ -205,13 +208,15 @@ class ContractAnalyzer:
             # Reduce the block range for faster analysis
             latest_block = self.w3.eth.block_number
             from_block = latest_block - 100  # Reduced from 1000 to 100 blocks
-            print(f"Analyzing transactions from block {from_block} to {latest_block}")
+            print(f"Analyzing transactions from block {
+                  from_block} to {latest_block}")
 
             # Get transaction history with progress updates
             transactions = []
             for block_num in range(from_block, latest_block):
                 if (block_num - from_block) % 10 == 0:  # Progress update every 10 blocks
-                    print(f"Processing block {block_num} ({((block_num - from_block)/(latest_block - from_block))*100:.1f}%)")
+                    print(f"Processing block {block_num} ({
+                          ((block_num - from_block)/(latest_block - from_block))*100:.1f}%)")
 
                 try:
                     block = self.w3.eth.get_block(
@@ -222,7 +227,8 @@ class ContractAnalyzer:
                         if tx.get('to') and tx['to'].lower() == contract_address.lower():
                             transactions.append(tx)
                 except Exception as block_error:
-                    print(f"Error processing block {block_num}: {str(block_error)}")
+                    print(f"Error processing block {
+                          block_num}: {str(block_error)}")
                     continue
 
             print(f"Found {len(transactions)} transactions")
