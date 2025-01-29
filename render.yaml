@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: defi-security-monitor
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ETHEREUM_RPC_URL
+        sync: false 
