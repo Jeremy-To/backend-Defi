@@ -1,6 +1,6 @@
 fastapi
-uvicorn
-gunicorn
+uvicorn[standard]
+gunicorn==21.2.0
 web3
 python-dotenv
 structlog
@@ -8,5 +8,5 @@ prometheus-fastapi-instrumentator
 slowapi
 cachetools
 requests
-pydantic  # Pin to v1
+pydantic
 eth-abi
