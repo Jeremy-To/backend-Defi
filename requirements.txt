@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+gunicorn
 web3
 python-dotenv
 structlog
