@@ -118,8 +118,11 @@ async def analyze_token(
 
 def start():
     """Launched with `python -m src.app` at root level"""
-    uvicorn.run("src.app:app", host="0.0.0.0",
-                port=int(os.getenv("PORT", "8000")),
+    port = int(os.getenv("PORT", "8000"))
+    print(f"Starting server on port {port}")
+    uvicorn.run("src.app:app",
+                host="0.0.0.0",
+                port=port,
                 reload=True)  # Enable auto-reload for development
 
 

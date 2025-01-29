@@ -14,5 +14,3 @@ services:
         value: .
     healthCheckPath: /health
     autoDeploy: true
-    domains:
-      - defi-security-monitor.onrender.com
