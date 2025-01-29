@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn src.app:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT
+    startCommand: 'gunicorn src.app:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT'
     envVars:
       - key: ETHEREUM_RPC_URL
         sync: false
