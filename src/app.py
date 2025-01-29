@@ -69,8 +69,7 @@ class ContractRequest(BaseModel):
 async def analyze_contract(request: ContractRequest):
     logger.info("contract_analysis_started", contract=request.contract_address)
     try:
-        print(f"Received request to analyze contract: {
-              request.contract_address}")
+        print(f"Received request to analyze contract: {request.contract_address}")
         analysis = await contract_analyzer.analyze_contract(request.contract_address)
         return analysis
     except ValueError as e:

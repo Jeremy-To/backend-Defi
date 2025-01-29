@@ -6,4 +6,5 @@ services:
     startCommand: uvicorn src.app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ETHEREUM_RPC_URL
-        sync: false 
+        sync: false
+    autoDeploy: true
