@@ -192,22 +192,53 @@ async def get_contract_history(
     request: Request,
     contract_address: Annotated[str, Field(pattern=r"^0x[a-fA-F0-9]{40}$")],
     full_analysis: bool = Query(
-        default=False, description="Wait for full analysis")
+        default=False, description="Wait for full analysis"),
+    analysis_depth: str = Query(
+        default="standard",
+        enum=["quick", "standard", "deep"],
+        description="Analysis depth level"
+    ),
+    include_holders: bool = Query(
+        default=True, description="Include holder analysis"),
+    include_governance: bool = Query(
+        default=True, description="Include governance analysis"),
+    time_range: str = Query(
+        default="24h",
+        enum=["1h", "24h", "7d", "30d"],
+        description="Time range for analysis"
+    )
 ):
     """
-    Get contract history with option for detailed analysis
+    Enhanced contract history analysis with configurable parameters
     """
     try:
         # Validate contract address
         if not Web3.is_address(contract_address):
             raise ValueError("Invalid contract address")
 
-        # Queue detailed analysis
-        task_id = await background_analyzer.queue_analysis(contract_address)
+        # Configure analysis parameters based on inputs
+        analysis_config = {
+            "depth": analysis_depth,
+            "include_holders": include_holders,
+            "include_governance": include_governance,
+            "time_range": time_range
+        }
+
+        # Queue detailed analysis with configuration
+        task_id = await background_analyzer.queue_analysis(
+            contract_address,
+            analysis_config
+        )
 
         if full_analysis:
-            # Wait for analysis to complete (with timeout)
-            for _ in range(30):  # Wait up to 30 seconds
+            # Wait for analysis with dynamic timeout based on depth
+            timeout = {
+                "quick": 10,
+                "standard": 30,
+                "deep": 60
+            }.get(analysis_depth, 30)
+
+            for _ in range(timeout):
                 task = background_analyzer.get_analysis_status(task_id)
                 if task and task.status == "completed":
                     return task.result
@@ -223,12 +254,27 @@ async def get_contract_history(
                 detail="Analysis timeout - try getting status later"
             )
         else:
-            # Return quick response with task ID
+            # Return quick overview with enhanced metadata
             quick_overview = await contract_analyzer.get_quick_overview(contract_address)
+
+            # Calculate estimated completion time based on analysis config
+            estimated_seconds = {
+                "quick": 10,
+                "standard": 30,
+                "deep": 60
+            }.get(analysis_depth, 30)
+
+            if time_range == "7d":
+                estimated_seconds *= 2
+            elif time_range == "30d":
+                estimated_seconds *= 4
+
             return {
                 **quick_overview,
                 "task_id": task_id,
                 "status": "analysis_pending",
+                "analysis_config": analysis_config,
+                "estimated_completion_time": estimated_seconds,
                 "status_endpoint": f"/api/contract-history/{contract_address}/status/{task_id}"
             }
 

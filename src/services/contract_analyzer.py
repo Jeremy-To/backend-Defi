@@ -78,12 +78,22 @@ class HistoricalTransaction:
     success: bool
 
 
+@dataclass
 class ContractHistory:
     def __init__(self):
         self.transactions: List[HistoricalTransaction] = []
         self.events: List[ContractEvent] = []
         self.modifications: List[ContractModification] = []
         self.analysis: dict = {}
+        self.patterns: List[Dict] = []  # New: Store identified patterns
+        self.risk_metrics: Dict = {}    # New: Store risk metrics
+        self.holder_metrics: Dict = {}   # New: Store holder information
+        self.interaction_metrics: Dict = {}  # New: Store interaction patterns
+        self.volume_metrics: Dict = {}   # New: Store volume analysis
+        # New: Track governance changes
+        self.governance_changes: List[Dict] = []
+        # New: Track security-related events
+        self.security_events: List[Dict] = []
 
 
 logger = structlog.get_logger()
@@ -128,7 +138,7 @@ class ContractAnalyzer:
         self._events_cache = TTLCache(maxsize=100, ttl=300)  # 5 minutes cache
         self._modifications_cache = TTLCache(maxsize=100, ttl=300)
         self._transactions_cache = TTLCache(maxsize=100, ttl=300)
-
+        
     async def initialize(self):
         """Async initialization method"""
         if self._initialized:
