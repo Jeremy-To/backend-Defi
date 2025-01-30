@@ -113,7 +113,10 @@ async def analyze_contract(
     logger.info("contract_analysis_started",
                 contract=contract_request.contract_address)
     try:
-        analysis = await contract_analyzer.analyze_contract(contract_request.contract_address)
+        # Convert to checksum address for consistency
+        checksum_address = Web3.to_checksum_address(
+            contract_request.contract_address)
+        analysis = await contract_analyzer.analyze_contract(checksum_address)
         return analysis
     except ValueError as e:
         logger.error("validation_error", error=str(e))

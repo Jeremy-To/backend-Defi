@@ -138,7 +138,7 @@ class ContractAnalyzer:
         self._events_cache = TTLCache(maxsize=100, ttl=300)  # 5 minutes cache
         self._modifications_cache = TTLCache(maxsize=100, ttl=300)
         self._transactions_cache = TTLCache(maxsize=100, ttl=300)
-        
+
     async def initialize(self):
         """Async initialization method"""
         if self._initialized:
@@ -179,9 +179,12 @@ class ContractAnalyzer:
                              error=str(e))
                 raise
 
-    async def _check_backdoor_functions(self, bytecode: str) -> List[Vulnerability]:
+    async def _check_backdoor_functions(self, bytecode: bytes) -> List[Vulnerability]:
         """Check for potential backdoor functions"""
         vulnerabilities = []
+
+        # Convert bytecode to hex string for pattern matching
+        bytecode_hex = bytecode.hex()
 
         # Known dangerous function signatures
         suspicious_signatures = {
@@ -196,7 +199,7 @@ class ContractAnalyzer:
         }
 
         for signature, function_name in suspicious_signatures.items():
-            if signature in bytecode:
+            if signature[2:] in bytecode_hex:  # Remove '0x' prefix for comparison
                 vulnerabilities.append(
                     Vulnerability(
                         type=VulnerabilityType.BACKDOOR_FUNCTION,
@@ -209,23 +212,26 @@ class ContractAnalyzer:
 
         return vulnerabilities
 
-    async def _check_withdrawal_restrictions(self, bytecode: str) -> List[Vulnerability]:
+    async def _check_withdrawal_restrictions(self, bytecode: bytes) -> List[Vulnerability]:
         """Check for code patterns that might restrict withdrawals"""
         vulnerabilities = []
 
+        # Convert bytecode to hex string for pattern matching
+        bytecode_hex = bytecode.hex()
+
         restriction_patterns = {
-            "0x62d91478": "Possible withdrawal blocking mechanism",
-            "0x7c025200": "Suspicious withdrawal condition"
+            "62d91478": "Possible withdrawal blocking mechanism",
+            "7c025200": "Suspicious withdrawal condition"
         }
 
         for pattern, description in restriction_patterns.items():
-            if pattern in bytecode:
+            if pattern in bytecode_hex:
                 vulnerabilities.append(
                     Vulnerability(
                         type=VulnerabilityType.WITHDRAWAL_BLOCK,
                         severity=Severity.HIGH,
                         description=description,
-                        evidence=f"Pattern found: {pattern}"
+                        evidence=f"Pattern found: 0x{pattern}"
                     )
                 )
 
@@ -389,24 +395,26 @@ class ContractAnalyzer:
             print(f"Error getting holder statistics: {str(e)}")
             return {}
 
-    async def _check_reentrancy(self, bytecode: str) -> List[Vulnerability]:
+    async def _check_reentrancy(self, bytecode: bytes) -> List[Vulnerability]:
         """Check for reentrancy vulnerabilities"""
         vulnerabilities = []
 
+        # Convert bytecode to hex string for pattern matching
+        bytecode_hex = bytecode.hex()
+
         # Check for external calls before state changes
         reentrancy_patterns = {
-            "0x": "External call followed by state change",
-            # Add more patterns
+            "": "External call followed by state change",  # Add actual patterns
         }
 
         for pattern, description in reentrancy_patterns.items():
-            if pattern in bytecode:
+            if pattern and pattern in bytecode_hex:
                 vulnerabilities.append(
                     Vulnerability(
                         type=VulnerabilityType.REENTRANCY,
                         severity=Severity.HIGH,
                         description=description,
-                        evidence=f"Pattern found: {pattern}"
+                        evidence=f"Pattern found: 0x{pattern}"
                     )
                 )
 
@@ -610,6 +618,41 @@ class ContractAnalyzer:
         try:
             checksum_address = Web3.to_checksum_address(contract_address)
 
+            token_analysis = {
+                "contract_address": checksum_address,
+                "token_type": "Unknown",
+                "total_supply": 0,
+                "circulating_supply": 0,
+                "holder_metrics": {},
+                "transfer_patterns": {},
+                "trading_analysis": {},
+                "potential_risks": [],
+                "gas_analysis": {}
+            }
+
+            # First check if contract has token-like bytecode
+            bytecode = await self.w3.eth.get_code(checksum_address)
+            bytecode_hex = bytecode.hex()
+
+            # Check for common ERC20 function signatures in bytecode
+            erc20_signatures = {
+                "70a08231": "balanceOf(address)",  # balanceOf
+                "18160ddd": "totalSupply()",       # totalSupply
+                "a9059cbb": "transfer(address,uint256)",  # transfer
+                "dd62ed3e": "allowance(address,address)"  # allowance
+            }
+
+            # Check if contract has basic ERC20 functions
+            is_potential_token = any(
+                sig in bytecode_hex for sig in erc20_signatures)
+
+            if not is_potential_token:
+                return {
+                    **token_analysis,
+                    "error": "Contract does not appear to be an ERC20 token",
+                    "details": "Missing basic ERC20 functions"
+                }
+
             # Create ABI for basic ERC20 functions
             ERC20_ABI = [
                 {
@@ -628,32 +671,32 @@ class ContractAnalyzer:
                 }
             ]
 
-            token_analysis = {
-                "token_type": "Unknown",
-                "total_supply": 0,
-                "circulating_supply": 0,
-                "holder_metrics": {},
-                "transfer_patterns": {},
-                "trading_analysis": {},
-                "potential_risks": [],
-                "gas_analysis": {}
-            }
-
             # Create contract instance
             contract = self.w3.eth.contract(
                 address=checksum_address, abi=ERC20_ABI)
 
-            # Check if contract is a token by calling totalSupply()
             try:
-                total_supply = contract.functions.totalSupply().call()
+                # Try to get total supply with timeout
+                total_supply = await asyncio.wait_for(
+                    contract.functions.totalSupply().call(),
+                    timeout=5.0
+                )
                 token_analysis["token_type"] = "ERC20"
                 token_analysis["total_supply"] = total_supply
 
-                # Get circulating supply by checking balance of token contract
-                contract_balance = contract.functions.balanceOf(
-                    checksum_address).call()
-                token_analysis["circulating_supply"] = total_supply - \
-                    contract_balance
+                try:
+                    # Get circulating supply with timeout
+                    contract_balance = await asyncio.wait_for(
+                        contract.functions.balanceOf(checksum_address).call(),
+                        timeout=5.0
+                    )
+                    token_analysis["circulating_supply"] = total_supply - \
+                        contract_balance
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.warning("balance_fetch_error",
+                                   contract=contract_address,
+                                   error=str(e))
+                    token_analysis["circulating_supply"] = total_supply
 
                 # Continue with other analysis...
                 await self._analyze_supply_mechanics(checksum_address, token_analysis)
@@ -661,14 +704,18 @@ class ContractAnalyzer:
                 await self._analyze_trading_patterns(checksum_address, token_analysis)
                 await self._check_honeypot_characteristics(checksum_address, token_analysis)
 
-                # Add gas analysis to token analysis
+                # Add gas analysis
                 token_analysis["gas_analysis"] = await self._analyze_gas_usage(checksum_address)
 
-            except Exception as e:
+            except (asyncio.TimeoutError, Exception) as e:
                 logger.error("token_analysis_error",
                              contract=contract_address,
                              error=str(e))
-                token_analysis["error"] = f"Error analyzing token: {str(e)}"
+                token_analysis.update({
+                    "error": f"Error analyzing token: {str(e)}",
+                    "token_type": "Non-Standard Token or Contract",
+                    "details": "Contract may not implement standard ERC20 interface"
+                })
 
             return token_analysis
 
@@ -779,8 +826,11 @@ class ContractAnalyzer:
     async def _perform_analysis(self, contract_address: str) -> Dict:
         """Perform comprehensive contract analysis"""
         try:
+            # Convert address to checksum format if not already
+            checksum_address = Web3.to_checksum_address(contract_address)
+
             # Get contract code
-            bytecode = await self.w3.eth.get_code(contract_address)
+            bytecode = await self.w3.eth.get_code(checksum_address)
             code_size = len(bytecode)
 
             # Initialize results
@@ -789,27 +839,27 @@ class ContractAnalyzer:
             # Run all security checks
             vulnerabilities.extend(await self._check_backdoor_functions(bytecode))
             vulnerabilities.extend(await self._check_withdrawal_restrictions(bytecode))
-            vulnerabilities.extend(await self._check_permissions(contract_address))
+            vulnerabilities.extend(await self._check_permissions(checksum_address))
             vulnerabilities.extend(await self._check_reentrancy(bytecode))
 
             # Get transaction patterns
-            suspicious_transactions = await self._analyze_transaction_patterns(contract_address)
+            suspicious_transactions = await self._analyze_transaction_patterns(checksum_address)
             vulnerabilities.extend(suspicious_transactions)
 
             # Get liquidity risks if applicable
-            liquidity_risks = await self._analyze_liquidity_risk(contract_address)
+            liquidity_risks = await self._analyze_liquidity_risk(checksum_address)
             vulnerabilities.extend(liquidity_risks)
 
             # Calculate overall risk score
             risk_score = self._calculate_risk_score(vulnerabilities)
 
             # Get additional analysis
-            tx_summary = await self._get_transaction_summary(contract_address)
-            holder_stats = await self._get_holder_statistics(contract_address)
+            tx_summary = await self._get_transaction_summary(checksum_address)
+            holder_stats = await self._get_holder_statistics(checksum_address)
 
             # Compile results
             return {
-                "contract_address": contract_address,
+                "contract_address": checksum_address,
                 "code_size": code_size,
                 "risk_score": risk_score,
                 "vulnerabilities": [v.__dict__ for v in vulnerabilities],
