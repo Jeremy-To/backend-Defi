@@ -6,12 +6,16 @@ from slowapi.util import get_remote_address
 import structlog
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field, constr
-from typing import Optional, Annotated
+from typing import Optional, Annotated, Dict
 import uvicorn
 from .services.contract_analyzer import ContractAnalyzer
 from dotenv import load_dotenv
 import os
 import re
+from web3 import Web3
+import time
+from .services.background_analyzer import BackgroundAnalyzer
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -32,11 +36,35 @@ if not eth_url:
     raise EnvironmentError("ETHEREUM_RPC_URL environment variable is not set")
 
 # Initialize services
-try:
-    contract_analyzer = ContractAnalyzer(eth_url)
-except Exception as e:
-    logger.error("failed_to_initialize_analyzer", error=str(e))
-    raise
+
+
+async def init_contract_analyzer():
+    try:
+        analyzer = ContractAnalyzer(eth_url)
+        await analyzer.initialize()  # Call async initialization
+        return analyzer
+    except Exception as e:
+        logger.error("failed_to_initialize_analyzer", error=str(e))
+        raise
+
+contract_analyzer = None
+
+# Initialize background analyzer
+background_analyzer = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    global contract_analyzer, background_analyzer
+    contract_analyzer = await init_contract_analyzer()
+    background_analyzer = BackgroundAnalyzer(contract_analyzer.w3)
+    await background_analyzer.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if background_analyzer:
+        await background_analyzer.stop()
 
 # Configure rate limiting
 limiter = Limiter(key_func=get_remote_address)
@@ -114,6 +142,135 @@ async def analyze_token(
     except Exception as e:
         logger.error("token_analysis_error", error=str(e))
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/gas-analysis/{contract_address}")
+@limiter.limit("5/minute")
+async def analyze_gas_usage(
+    request: Request,
+    contract_address: Annotated[str, Field(pattern=r"^0x[a-fA-F0-9]{40}$")]
+) -> Dict:
+    """
+    Analyze gas usage patterns and detect potential gas-related fraud for a contract
+    """
+    logger.info("gas_analysis_started", contract=contract_address)
+
+    try:
+        # Validate contract address
+        if not Web3.is_address(contract_address):
+            raise ValueError("Invalid contract address")
+
+        # Perform gas analysis
+        analysis = await contract_analyzer._analyze_gas_usage(contract_address)
+
+        if "error" in analysis:
+            logger.error("gas_analysis_error",
+                         contract=contract_address,
+                         error=analysis["error"])
+            raise HTTPException(
+                status_code=500,
+                detail=f"Gas analysis failed: {analysis['error']}"
+            )
+
+        return analysis
+
+    except ValueError as e:
+        logger.error("validation_error", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        logger.error("gas_analysis_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during gas analysis"
+        )
+
+
+@app.get("/api/contract-history/{contract_address}")
+@limiter.limit("5/minute")
+async def get_contract_history(
+    request: Request,
+    contract_address: Annotated[str, Field(pattern=r"^0x[a-fA-F0-9]{40}$")],
+    full_analysis: bool = Query(
+        default=False, description="Wait for full analysis")
+):
+    """
+    Get contract history with option for detailed analysis
+    """
+    try:
+        # Validate contract address
+        if not Web3.is_address(contract_address):
+            raise ValueError("Invalid contract address")
+
+        # Queue detailed analysis
+        task_id = await background_analyzer.queue_analysis(contract_address)
+
+        if full_analysis:
+            # Wait for analysis to complete (with timeout)
+            for _ in range(30):  # Wait up to 30 seconds
+                task = background_analyzer.get_analysis_status(task_id)
+                if task and task.status == "completed":
+                    return task.result
+                elif task and task.status == "failed":
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Analysis failed: {task.error}"
+                    )
+                await asyncio.sleep(1)
+
+            raise HTTPException(
+                status_code=408,
+                detail="Analysis timeout - try getting status later"
+            )
+        else:
+            # Return quick response with task ID
+            quick_overview = await contract_analyzer.get_quick_overview(contract_address)
+            return {
+                **quick_overview,
+                "task_id": task_id,
+                "status": "analysis_pending",
+                "status_endpoint": f"/api/contract-history/{contract_address}/status/{task_id}"
+            }
+
+    except ValueError as e:
+        logger.error("validation_error", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("history_retrieval_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve contract history"
+        )
+
+
+@app.get("/api/contract-history/{contract_address}/status/{task_id}")
+async def get_analysis_status(
+    contract_address: str,
+    task_id: str
+):
+    """Get the status of a detailed analysis task"""
+    task = background_analyzer.get_analysis_status(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail="Analysis task not found"
+        )
+
+    if task.status == "completed":
+        return task.result
+    elif task.status == "failed":
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {task.error}"
+        )
+    else:
+        return {
+            "status": task.status,
+            "contract_address": contract_address,
+            "task_id": task_id,
+            "started_at": task.start_time,
+            "elapsed_time": time.time() - task.start_time
+        }
 
 
 def start():
