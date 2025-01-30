@@ -614,214 +614,518 @@ class ContractAnalyzer:
             return "No significant gas-related risks detected. Continue normal monitoring."
 
     async def analyze_token_contract(self, contract_address: str) -> Dict:
-        """Comprehensive token analysis including supply, transfers, and trading patterns"""
+        """Comprehensive token analysis including supply mechanics, trading patterns, and risk assessment"""
         try:
             checksum_address = Web3.to_checksum_address(contract_address)
 
             token_analysis = {
                 "contract_address": checksum_address,
                 "token_type": "Unknown",
-                "total_supply": 0,
-                "circulating_supply": 0,
-                "holder_metrics": {},
-                "transfer_patterns": {},
-                "trading_analysis": {},
-                "potential_risks": [],
-                "gas_analysis": {}
+                "basic_info": {},
+                "supply_mechanics": {},
+                "trading_metrics": {},
+                "holder_analysis": {},
+                "risk_assessment": {},
+                "security_analysis": {},
+                "timestamp": int(time.time())
             }
 
-            # First check if contract has token-like bytecode
+            # Get contract code and check if it's a token
             bytecode = await self.w3.eth.get_code(checksum_address)
             bytecode_hex = bytecode.hex()
 
-            # Check for common ERC20 function signatures in bytecode
+            # Check for common ERC20 function signatures
             erc20_signatures = {
-                "70a08231": "balanceOf(address)",  # balanceOf
-                "18160ddd": "totalSupply()",       # totalSupply
-                "a9059cbb": "transfer(address,uint256)",  # transfer
-                "dd62ed3e": "allowance(address,address)"  # allowance
+                "70a08231": "balanceOf(address)",
+                "18160ddd": "totalSupply()",
+                "a9059cbb": "transfer(address,uint256)",
+                "dd62ed3e": "allowance(address,address)",
+                "095ea7b3": "approve(address,uint256)",
+                "23b872dd": "transferFrom(address,address,uint256)"
             }
 
-            # Check if contract has basic ERC20 functions
-            is_potential_token = any(
-                sig in bytecode_hex for sig in erc20_signatures)
+            # Verify token standard
+            is_erc20 = all(sig in bytecode_hex for sig in [
+                           "70a08231", "18160ddd", "a9059cbb"])
 
-            if not is_potential_token:
+            if not is_erc20:
                 return {
                     **token_analysis,
-                    "error": "Contract does not appear to be an ERC20 token",
-                    "details": "Missing basic ERC20 functions"
+                    "error": "Contract does not implement ERC20 standard",
+                    "details": "Missing required ERC20 functions"
                 }
 
-            # Create ABI for basic ERC20 functions
+            # Create basic ERC20 contract instance
             ERC20_ABI = [
-                {
-                    "constant": True,
-                    "inputs": [],
-                    "name": "totalSupply",
-                    "outputs": [{"name": "", "type": "uint256"}],
-                    "type": "function"
-                },
-                {
-                    "constant": True,
-                    "inputs": [{"name": "_owner", "type": "address"}],
-                    "name": "balanceOf",
-                    "outputs": [{"name": "balance", "type": "uint256"}],
-                    "type": "function"
-                }
+                {"constant": True, "inputs": [], "name": "totalSupply", "outputs": [
+                    {"name": "", "type": "uint256"}], "type": "function"},
+                {"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [
+                    {"name": "balance", "type": "uint256"}], "type": "function"},
+                {"constant": True, "inputs": [], "name": "decimals", "outputs": [
+                    {"name": "", "type": "uint8"}], "type": "function"},
+                {"constant": True, "inputs": [], "name": "symbol", "outputs": [
+                    {"name": "", "type": "string"}], "type": "function"},
+                {"constant": True, "inputs": [], "name": "name", "outputs": [
+                    {"name": "", "type": "string"}], "type": "function"}
             ]
 
-            # Create contract instance
             contract = self.w3.eth.contract(
                 address=checksum_address, abi=ERC20_ABI)
 
+            # Get basic token info with timeout protection
             try:
-                # Try to get total supply with timeout
-                total_supply = await asyncio.wait_for(
+                basic_info = await asyncio.gather(
                     contract.functions.totalSupply().call(),
-                    timeout=5.0
+                    contract.functions.decimals().call(),
+                    contract.functions.symbol().call(),
+                    contract.functions.name().call(),
+                    return_exceptions=True
                 )
-                token_analysis["token_type"] = "ERC20"
-                token_analysis["total_supply"] = total_supply
 
-                try:
-                    # Get circulating supply with timeout
-                    contract_balance = await asyncio.wait_for(
-                        contract.functions.balanceOf(checksum_address).call(),
-                        timeout=5.0
-                    )
-                    token_analysis["circulating_supply"] = total_supply - \
-                        contract_balance
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning("balance_fetch_error",
-                                   contract=contract_address,
-                                   error=str(e))
-                    token_analysis["circulating_supply"] = total_supply
+                token_analysis["basic_info"] = {
+                    "total_supply": basic_info[0] if not isinstance(basic_info[0], Exception) else None,
+                    "decimals": basic_info[1] if not isinstance(basic_info[1], Exception) else 18,
+                    "symbol": basic_info[2] if not isinstance(basic_info[2], Exception) else "UNKNOWN",
+                    "name": basic_info[3] if not isinstance(basic_info[3], Exception) else "Unknown Token"
+                }
 
-                # Continue with other analysis...
-                await self._analyze_supply_mechanics(checksum_address, token_analysis)
-                await self._analyze_transfer_restrictions(checksum_address, token_analysis)
-                await self._analyze_trading_patterns(checksum_address, token_analysis)
-                await self._check_honeypot_characteristics(checksum_address, token_analysis)
+                # Analyze supply mechanics
+                supply_mechanics = await self._analyze_supply_mechanics(checksum_address, bytecode_hex)
+                token_analysis["supply_mechanics"] = supply_mechanics
 
-                # Add gas analysis
-                token_analysis["gas_analysis"] = await self._analyze_gas_usage(checksum_address)
+                if supply_mechanics["is_mintable"] or supply_mechanics["is_burnable"]:
+                    token_analysis["token_type"] = "Dynamic Supply ERC20"
+                elif supply_mechanics["has_transfer_fee"]:
+                    token_analysis["token_type"] = "Fee on Transfer Token"
+                else:
+                    token_analysis["token_type"] = "Standard ERC20"
 
-            except (asyncio.TimeoutError, Exception) as e:
+                # Get trading metrics
+                token_analysis["trading_metrics"] = await self._analyze_trading_metrics(checksum_address)
+
+                # Analyze holder distribution
+                token_analysis["holder_analysis"] = await self._analyze_holder_distribution(checksum_address, contract)
+
+                # Security analysis
+                token_analysis["security_analysis"] = await self._analyze_token_security(checksum_address, bytecode_hex)
+
+                # Calculate risk assessment
+                token_analysis["risk_assessment"] = self._calculate_token_risk(
+                    token_analysis)
+
+                return token_analysis
+
+            except Exception as e:
                 logger.error("token_analysis_error",
-                             contract=contract_address,
-                             error=str(e))
-                token_analysis.update({
-                    "error": f"Error analyzing token: {str(e)}",
-                    "token_type": "Non-Standard Token or Contract",
-                    "details": "Contract may not implement standard ERC20 interface"
-                })
-
-            return token_analysis
+                             contract=contract_address, error=str(e))
+                return {
+                    **token_analysis,
+                    "error": str(e),
+                    "status": "failed"
+                }
 
         except Exception as e:
             logger.error("token_analysis_failed",
-                         contract=contract_address,
-                         error=str(e))
+                         contract=contract_address, error=str(e))
             raise
 
-    async def _analyze_supply_mechanics(self, contract_address: str, analysis: Dict) -> None:
-        """Analyze token supply mechanics including minting and burning"""
-        try:
-            # Check for mint functions
-            mint_signatures = ["0x40c10f19", "0xa0712d68"]
-            burn_signatures = ["0x42966c68", "0x79cc6790"]
+    async def _analyze_supply_mechanics(self, contract_address: str, bytecode_hex: str) -> Dict:
+        """Analyze token supply mechanics and features"""
+        supply_mechanics = {
+            "is_mintable": False,
+            "is_burnable": False,
+            "has_transfer_fee": False,
+            "has_max_transaction_limit": False,
+            "has_blacklist": False,
+            "has_whitelist": False,
+            "has_anti_whale": False,
+            "suspicious_features": []
+        }
 
-            code = await self.w3.eth.get_code(contract_address)
+        # Check for mint functions
+        mint_signatures = ["40c10f19", "a0712d68", "449a52f8"]
+        supply_mechanics["is_mintable"] = any(
+            sig in bytecode_hex for sig in mint_signatures)
 
-            if any(sig in code for sig in mint_signatures):
-                analysis["potential_risks"].append({
-                    "type": VulnerabilityType.TOKEN_SUPPLY_MANIPULATION,
-                    "severity": Severity.HIGH,
-                    "description": "Contract contains functions that can modify token supply"
-                })
+        # Check for burn functions
+        burn_signatures = ["42966c68", "79cc6790"]
+        supply_mechanics["is_burnable"] = any(
+            sig in bytecode_hex for sig in burn_signatures)
 
-            # Check for deflationary mechanics
-            if any(sig in code for sig in burn_signatures):
-                analysis["token_type"] = "Deflationary ERC20"
+        # Check for transfer fee mechanism
+        fee_patterns = ["24274488", "a6e0943b"]
+        supply_mechanics["has_transfer_fee"] = any(
+            sig in bytecode_hex for sig in fee_patterns)
 
-        except Exception as e:
-            print(f"Error analyzing supply mechanics: {str(e)}")
+        # Check for transaction limits
+        limit_patterns = ["7c025200", "8f98ce8f"]
+        supply_mechanics["has_max_transaction_limit"] = any(
+            sig in bytecode_hex for sig in limit_patterns)
 
-    async def _analyze_transfer_restrictions(self, contract_address: str, analysis: Dict) -> None:
-        """Analyze transfer restrictions and limitations"""
-        try:
-            # Common transfer restriction patterns
-            restriction_patterns = {
-                "0x7c025200": "Max transaction amount",
-                "0x8f98ce8f": "Cooldown between transfers",
-                "0x4a417a45": "Blacklist functionality"
-            }
+        # Check for blacklist/whitelist
+        blacklist_patterns = ["4a417a45", "b6a5d7de"]
+        whitelist_patterns = ["9b19251a", "8a8c523c"]
+        supply_mechanics["has_blacklist"] = any(
+            sig in bytecode_hex for sig in blacklist_patterns)
+        supply_mechanics["has_whitelist"] = any(
+            sig in bytecode_hex for sig in whitelist_patterns)
 
-            code = await self.w3.eth.get_code(contract_address)
+        # Check for anti-whale mechanisms
+        anti_whale_patterns = ["f4b9fa75", "c929ccf7"]
+        supply_mechanics["has_anti_whale"] = any(
+            sig in bytecode_hex for sig in anti_whale_patterns)
 
-            for pattern, description in restriction_patterns.items():
-                if pattern in code:
-                    analysis["transfer_patterns"][description] = True
+        # Identify suspicious features
+        if supply_mechanics["is_mintable"] and not supply_mechanics["has_whitelist"]:
+            supply_mechanics["suspicious_features"].append(
+                "Unrestricted minting capability")
+        if supply_mechanics["has_blacklist"] and supply_mechanics["has_whitelist"]:
+            supply_mechanics["suspicious_features"].append(
+                "Complex access control mechanism")
+        if supply_mechanics["has_transfer_fee"] and supply_mechanics["has_max_transaction_limit"]:
+            supply_mechanics["suspicious_features"].append(
+                "Multiple transfer restrictions")
 
-        except Exception as e:
-            print(f"Error analyzing transfer restrictions: {str(e)}")
+        return supply_mechanics
 
-    async def _analyze_trading_patterns(self, contract_address: str, analysis: Dict) -> None:
-        """Analyze trading patterns and liquidity"""
+    async def _analyze_trading_metrics(self, contract_address: str) -> Dict:
+        """Analyze trading patterns and liquidity metrics"""
         try:
             latest_block = await self.w3.eth.block_number
-            from_block = latest_block - 1000
+            from_block = latest_block - 1000  # Look back ~4 hours
 
-            # Get recent transfers
-            transfer_filter = {
+            # Get transfer events
+            transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+            logs = await self.w3.eth.get_logs({
+                'address': contract_address,
                 'fromBlock': from_block,
                 'toBlock': 'latest',
-                'address': contract_address
-            }
+                'topics': [transfer_topic]
+            })
 
-            # Analyze trading volume and frequency
-            analysis["trading_analysis"] = {
-                "24h_volume": 0,
-                "unique_traders": 0,
-                "average_trade_size": 0,
-                "largest_trade": 0
+            # Process transfer data
+            transfers = []
+            unique_senders = set()
+            unique_receivers = set()
+            total_volume = 0
+
+            for log in logs:
+                try:
+                    sender = '0x' + log['topics'][1].hex()[-40:]
+                    receiver = '0x' + log['topics'][2].hex()[-40:]
+
+                    # Improved value parsing
+                    try:
+                        if isinstance(log['data'], str):
+                            if log['data'].startswith('0x'):
+                                value = int(log['data'], 16)
+                            else:
+                                value = int(log['data'])
+                        elif isinstance(log['data'], bytes):
+                            value = int.from_bytes(
+                                log['data'], byteorder='big')
+                        else:
+                            logger.warning("unexpected_data_type",
+                                           type=type(log['data']))
+                            continue
+                    except ValueError as e:
+                        logger.warning("value_parsing_error",
+                                       data=log['data'],
+                                       error=str(e))
+                        continue
+
+                    transfers.append({
+                        'sender': sender,
+                        'receiver': receiver,
+                        'value': value,
+                        'block_number': log['blockNumber']
+                    })
+
+                    unique_senders.add(sender)
+                    unique_receivers.add(receiver)
+                    total_volume += value
+                except Exception as e:
+                    logger.warning("transfer_processing_error",
+                                   error=str(e),
+                                   log=str(log))
+                    continue
+
+            if not transfers:
+                logger.info("no_transfers_found",
+                            contract=contract_address,
+                            from_block=from_block,
+                            to_block=latest_block)
+                return {
+                    "transfer_count": 0,
+                    "unique_senders": 0,
+                    "unique_receivers": 0,
+                    "total_volume": 0,
+                    "average_transfer_size": 0,
+                    "transfer_frequency": 0,
+                    "unique_addresses": 0,
+                    "active_period": {
+                        "from_block": from_block,
+                        "to_block": latest_block,
+                        "duration_blocks": latest_block - from_block
+                    }
+                }
+
+            # Calculate metrics
+            return {
+                "transfer_count": len(transfers),
+                "unique_senders": len(unique_senders),
+                "unique_receivers": len(unique_receivers),
+                "total_volume": total_volume,
+                "average_transfer_size": total_volume / len(transfers) if transfers else 0,
+                # Transfers per block
+                "transfer_frequency": len(transfers) / 1000 if transfers else 0,
+                "unique_addresses": len(unique_senders.union(unique_receivers)),
+                "active_period": {
+                    "from_block": from_block,
+                    "to_block": latest_block,
+                    "duration_blocks": latest_block - from_block
+                }
             }
 
         except Exception as e:
-            print(f"Error analyzing trading patterns: {str(e)}")
-
-    async def _check_honeypot_characteristics(self, contract_address: str, analysis: Dict) -> None:
-        """Check for characteristics commonly associated with honeypot tokens"""
-        try:
-            honeypot_indicators = {
-                "high_sell_tax": False,
-                "restricted_selling": False,
-                "hidden_owner_functions": False,
-                "suspicious_code_patterns": False
+            logger.error("trading_metrics_error", error=str(e))
+            return {
+                "error": str(e),
+                "transfer_count": 0,
+                "unique_senders": 0,
+                "unique_receivers": 0,
+                "total_volume": 0,
+                "average_transfer_size": 0,
+                "transfer_frequency": 0,
+                "unique_addresses": 0,
+                "active_period": {
+                    "from_block": 0,
+                    "to_block": 0,
+                    "duration_blocks": 0
+                }
             }
 
-            code = await self.w3.eth.get_code(contract_address)
+    async def _analyze_holder_distribution(self, contract_address: str, contract) -> Dict:
+        """Analyze token holder distribution and concentration"""
+        try:
+            # Get recent transfer events to identify holders
+            latest_block = await self.w3.eth.block_number
+            from_block = latest_block - 1000  # Look back ~4 hours
 
-            # Check for suspicious patterns
-            suspicious_patterns = [
-                "0x8f98ce8f",  # Hidden cooldown
-                "0x4a417a45",  # Hidden blacklist
-                "0x7c025200"   # Hidden limits
-            ]
+            transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+            logs = await self.w3.eth.get_logs({
+                'address': contract_address,
+                'fromBlock': from_block,
+                'toBlock': 'latest',
+                'topics': [transfer_topic]
+            })
 
-            if any(pattern in code for pattern in suspicious_patterns):
-                honeypot_indicators["suspicious_code_patterns"] = True
-                analysis["potential_risks"].append({
-                    "type": VulnerabilityType.HONEYPOT_RISK,
-                    "severity": Severity.HIGH,
-                    "description": "Contract contains patterns commonly found in honeypot tokens"
+            # Track balances
+            holder_balances = {}
+
+            # Get decimals for proper value calculation
+            try:
+                decimals = await contract.functions.decimals().call()
+            except Exception:
+                decimals = 18  # Default to 18 if not found
+
+            # Process transfers to get current holders
+            for log in logs:
+                try:
+                    from_addr = '0x' + log['topics'][1].hex()[-40:]
+                    to_addr = '0x' + log['topics'][2].hex()[-40:]
+
+                    # Improved value parsing for HexBytes
+                    try:
+                        if isinstance(log['data'], str):
+                            if log['data'].startswith('0x'):
+                                value = int(log['data'], 16)
+                            else:
+                                value = int(log['data'])
+                        elif hasattr(log['data'], 'hex'):  # Handle HexBytes
+                            value = int(log['data'].hex(), 16)
+                        elif isinstance(log['data'], bytes):
+                            value = int.from_bytes(
+                                log['data'], byteorder='big')
+                        else:
+                            logger.warning("unexpected_data_type",
+                                           type=type(log['data']))
+                            continue
+                    except ValueError as e:
+                        logger.warning("value_parsing_error",
+                                       data=str(log['data']),
+                                       error=str(e))
+                        continue
+
+                    # Update balances
+                    if from_addr in holder_balances:
+                        holder_balances[from_addr] = max(
+                            0, holder_balances[from_addr] - value)
+                    if to_addr not in holder_balances:
+                        holder_balances[to_addr] = 0
+                    holder_balances[to_addr] += value
+
+                except Exception as e:
+                    logger.warning("holder_processing_error",
+                                   error=str(e),
+                                   log=str(log))
+                    continue
+
+            # Remove zero balances
+            holders = {addr: bal for addr,
+                       bal in holder_balances.items() if bal > 0}
+
+            # Get total supply
+            try:
+                total_supply = await contract.functions.totalSupply().call()
+            except Exception:
+                total_supply = sum(holders.values())
+
+            # Calculate metrics
+            sorted_holders = sorted(
+                holders.items(), key=lambda x: x[1], reverse=True)
+            top_10_holders = sorted_holders[:10]
+            top_10_total = sum(balance for _, balance in top_10_holders)
+
+            return {
+                "total_holders": len(holders),
+                "top_10_holders": [
+                    {
+                        "address": addr,
+                        "balance": bal / (10 ** decimals),
+                        "percentage": (bal / total_supply) * 100 if total_supply > 0 else 0
+                    }
+                    for addr, bal in top_10_holders
+                ],
+                "top_holder_percentage": (top_10_total / total_supply) * 100 if total_supply > 0 else 0,
+                "average_balance": (total_supply / len(holders)) / (10 ** decimals) if holders else 0,
+                "distribution_summary": {
+                    "large_holders": len([b for b in holders.values() if b > total_supply / 100]),
+                    "medium_holders": len([b for b in holders.values() if total_supply / 1000 < b <= total_supply / 100]),
+                    "small_holders": len([b for b in holders.values() if b <= total_supply / 1000])
+                }
+            }
+
+        except Exception as e:
+            logger.error("holder_distribution_error", error=str(e))
+            return {
+                "total_holders": 0,
+                "top_10_holders": [],
+                "top_holder_percentage": 0,
+                "average_balance": 0,
+                "distribution_summary": {
+                    "large_holders": 0,
+                    "medium_holders": 0,
+                    "small_holders": 0
+                }
+            }
+
+    async def _analyze_token_security(self, contract_address: str, bytecode_hex: str) -> Dict:
+        """Analyze token contract for security issues and vulnerabilities"""
+        security_analysis = {
+            "vulnerabilities": [],
+            "security_features": [],
+            "ownership_analysis": {},
+            "access_control": {},
+            "risk_indicators": {}
+        }
+
+        # Check for security features
+        security_features = {
+            "pausable": ["8456cb59", "3f4ba83a"],  # pause/unpause
+            "upgradeable": ["3659cfe6", "a6f9dae1"],  # upgrade/implementation
+            "ownable": ["8da5cb5b", "f2fde38b"],  # owner/transferOwnership
+            "role_based": ["91d14854", "d547741f"]  # roles/permissions
+        }
+
+        for feature, signatures in security_features.items():
+            if any(sig in bytecode_hex for sig in signatures):
+                security_analysis["security_features"].append(feature)
+
+        # Check for vulnerabilities
+        vulnerability_patterns = {
+            "unchecked_transfer": ["4e2805c8"],
+            "self_destruct": ["83197ef0"],
+            "delegatecall": ["f0b9e5ba"],
+            "assembly_usage": ["60606040"],
+            "reentrancy": ["f758a188"]
+        }
+
+        for vuln, patterns in vulnerability_patterns.items():
+            if any(pattern in bytecode_hex for pattern in patterns):
+                security_analysis["vulnerabilities"].append({
+                    "type": vuln,
+                    "severity": "HIGH",
+                    "description": f"Potential {vuln.replace('_', ' ')} vulnerability detected"
                 })
 
-            analysis["honeypot_indicators"] = honeypot_indicators
+        # Analyze ownership and access control
+        security_analysis["ownership_analysis"] = {
+            "has_owner": "8da5cb5b" in bytecode_hex,
+            "can_renounce_ownership": "715018a6" in bytecode_hex,
+            "has_multiple_admins": "9f3ca536" in bytecode_hex,
+            "has_timelock": "d45c4435" in bytecode_hex
+        }
 
-        except Exception as e:
-            print(f"Error checking honeypot characteristics: {str(e)}")
+        # Calculate risk indicators
+        security_analysis["risk_indicators"] = {
+            "high_risk_functions": len(security_analysis["vulnerabilities"]) > 0,
+            "centralized_control": security_analysis["ownership_analysis"]["has_owner"] and not security_analysis["ownership_analysis"]["has_timelock"],
+            "unsafe_design": any(v["severity"] == "HIGH" for v in security_analysis["vulnerabilities"]),
+            "complexity_risk": len(security_analysis["security_features"]) > 3
+        }
+
+        return security_analysis
+
+    def _calculate_token_risk(self, analysis: Dict) -> Dict:
+        """Calculate overall risk assessment for the token"""
+        risk_score = 0
+        risk_factors = []
+
+        # Supply mechanics risks
+        if analysis["supply_mechanics"]["is_mintable"]:
+            risk_score += 20
+            risk_factors.append("Mintable supply - potential inflation risk")
+
+        if analysis["supply_mechanics"]["has_blacklist"]:
+            risk_score += 15
+            risk_factors.append(
+                "Blacklist functionality - centralization risk")
+
+        # Security risks
+        for vulnerability in analysis["security_analysis"].get("vulnerabilities", []):
+            if vulnerability["severity"] == "HIGH":
+                risk_score += 25
+                risk_factors.append(f"High severity vulnerability: {
+                                    vulnerability['type']}")
+
+        # Trading pattern risks
+        trading_metrics = analysis.get("trading_metrics", {})
+        if trading_metrics.get("transfer_count", 0) > 0:
+            if trading_metrics.get("unique_addresses", 0) < 10:
+                risk_score += 15
+                risk_factors.append(
+                    "Low number of unique addresses - potential manipulation")
+
+        # Holder concentration risks
+        holder_analysis = analysis.get("holder_analysis", {})
+        if holder_analysis.get("top_holder_percentage", 0) > 50:
+            risk_score += 20
+            risk_factors.append("High holder concentration")
+
+        return {
+            "risk_score": min(risk_score, 100),
+            "risk_level": "HIGH" if risk_score > 70 else "MEDIUM" if risk_score > 30 else "LOW",
+            "risk_factors": risk_factors,
+            "recommendations": [
+                "Monitor mint events closely" if analysis["supply_mechanics"]["is_mintable"] else None,
+                "Review transfer restrictions" if analysis[
+                    "supply_mechanics"]["has_max_transaction_limit"] else None,
+                "Audit centralization risks" if analysis["security_analysis"]["risk_indicators"].get(
+                    "centralized_control") else None
+            ],
+            "immediate_concerns": [factor for factor in risk_factors if "HIGH" in factor]
+        }
 
     async def _perform_analysis(self, contract_address: str) -> Dict:
         """Perform comprehensive contract analysis"""
