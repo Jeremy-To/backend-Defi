@@ -6,7 +6,7 @@ load_dotenv()
 
 class Settings:
     # Strip any whitespace or comments from environment variables
-    ETHEREUM_RPC_URL = os.getenv("ETHEREUM_RPC_URL", "").strip()
+    ETHEREUM_RPC_URL = os.getenv("ETHEREUM_RPC_URL", "").strip().encode('utf-8')  # Convert to bytes
     PORT = int(os.getenv("PORT", "8000").strip().split(
         "#")[0])  # Remove any comments
     VERSION = "1.0.0"

@@ -120,18 +120,17 @@ class ContractAnalyzer:
         ssl_context = ssl.create_default_context(cafile=certifi.where())
 
         # Configure Web3 with async HTTP provider
-        self.w3 = AsyncWeb3(
-            AsyncHTTPProvider(
-                provider_url,
-                request_kwargs={
-                    'timeout': 30,
-                    'headers': {
-                        'Content-Type': 'application/json',
-                    },
-                    'ssl': ssl_context  # Use the SSL context
-                }
-            )
-        )
+        self.w3 = AsyncWeb3(AsyncHTTPProvider(
+            provider_url,
+            request_kwargs={
+                'timeout': 30,
+                'headers': {
+                    'Content-Type': 'application/json',
+                },
+                'ssl': ssl_context,
+                'proxy': None  # Disable proxy to avoid SSL issues
+            }
+        ))
         self._initialized = False
 
         # Add caches for different operations

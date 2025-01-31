@@ -235,3 +235,42 @@ async def get_contract_history(
         logger.error("history_retrieval_error", error=str(e))
         raise HTTPException(
             status_code=500, detail="Failed to retrieve contract history")
+
+
+@app.post("/api/analyze-contract")
+@limiter.limit(settings.RATE_LIMIT_ANALYZE)
+async def analyze_contract(request: Request, contract_request: ContractRequest):
+    """
+    Analyze a smart contract for potential vulnerabilities and risks
+    """
+    try:
+        # Validate contract address
+        contract_address = contract_request.contract_address
+        if not Web3.is_address(contract_address):
+            raise ValueError("Invalid contract address")
+
+        logger.info("contract_analysis_started", contract=contract_address)
+
+        # Perform contract analysis
+        analysis = await contract_analyzer.analyze_contract(contract_address)
+
+        if "error" in analysis:
+            logger.error("analysis_error", 
+                        contract=contract_address,
+                        error=analysis["error"])
+            raise HTTPException(
+                status_code=500,
+                detail=f"Analysis failed: {analysis['error']}"
+            )
+
+        return analysis
+
+    except ValueError as e:
+        logger.error("validation_error", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("analysis_error", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during contract analysis"
+        )
